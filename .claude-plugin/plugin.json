@@ -1,0 +1,15 @@
+{
+  "name": "claude-go-brr",
+  "displayName": "Claude Go Brr",
+  "version": "0.1.0",
+  "description": "Submit the current Claude Code project directory as a cloud agent task through the offload host API.",
+  "author": {
+    "name": "Functio-AI"
+  },
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "offload",
+    "github"
+  ]
+}
