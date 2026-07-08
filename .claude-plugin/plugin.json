@@ -1,7 +1,7 @@
 {
   "name": "claude-go-brr",
   "displayName": "Claude Go Brr",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Submit the current Claude Code project directory as a cloud agent task through the offload host API.",
   "author": {
     "name": "Functio-AI"
