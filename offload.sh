@@ -91,8 +91,14 @@ import json
 import re
 import sys
 
-doc = json.load(sys.stdin)
+try:
+    doc = json.load(sys.stdin)
+except Exception as exc:
+    sys.stderr.write(f"[live logs] could not parse event stream response: {exc}\n")
+    sys.exit(2)
+
 ansi = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+rendered = 0
 for event in doc.get("events") or []:
     if not isinstance(event, dict):
         continue
@@ -104,10 +110,40 @@ for event in doc.get("events") or []:
         sys.stdout.write(f"[prompt {index}] {text}")
         if not text.endswith("\n"):
             sys.stdout.write("\n")
+        rendered += 1
     elif kind == "logs_truncated":
         message = text or "log stream truncated"
         sys.stdout.write(f"[live logs] {message}\n")
+        rendered += 1
 sys.stdout.flush()
+sys.exit(0 if rendered else 3)
+'
+}
+
+summarize_live_events() {
+  python3 -c '
+import json
+import sys
+
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+
+events = [event for event in (doc.get("events") or []) if isinstance(event, dict)]
+if not events:
+    print("event stream is empty")
+    sys.exit(0)
+
+kinds = []
+for event in events:
+    kind = str(event.get("kind") or event.get("type") or "unknown")
+    if kind not in kinds:
+        kinds.append(kind)
+preview = ", ".join(kinds[:6])
+if len(kinds) > 6:
+    preview += ", ..."
+print(f"received {len(events)} event(s), but none were printable claude_log entries (kinds: {preview})")
 '
 }
 
@@ -478,6 +514,7 @@ env_cmd() {
 submit_cmd() {
   local folder wait individual_instances prompt branch dirty_files git_ref body resp run_id elapsed rec status
   local live_events log_cursor event_http event_code event_body next_cursor
+  local live_event_notice render_status event_summary
   folder="$PWD"
   wait=1
   individual_instances=0
@@ -557,6 +594,7 @@ PY
   echo "> waiting for completion (Ctrl-C to stop waiting; the run continues remotely)..."
   elapsed=0
   live_events=1
+  live_event_notice=0
   log_cursor=0
   while (( elapsed < POLL_TIMEOUT )); do
     sleep "$POLL_INTERVAL"
@@ -568,11 +606,32 @@ PY
         event_body="${event_http%$'\n'*}"
         case "$event_code" in
           200)
-            printf '%s' "$event_body" | render_live_events
-            next_cursor="$(printf '%s' "$event_body" | json_field next_cursor)"
-            [[ "$next_cursor" =~ ^[0-9]+$ ]] && log_cursor="$next_cursor"
+            if printf '%s' "$event_body" | render_live_events; then
+              live_event_notice=1
+            else
+              render_status=$?
+              if [[ "$render_status" -eq 3 && "$live_event_notice" -eq 0 && "$elapsed" -ge 30 ]]; then
+                if event_summary="$(printf '%s' "$event_body" | summarize_live_events)"; then
+                  echo
+                  echo "> live logs: $event_summary; continuing status polling."
+                  live_event_notice=1
+                fi
+              elif [[ "$render_status" -ne 3 && "$live_event_notice" -eq 0 ]]; then
+                echo
+                echo "> live logs: event stream response was not readable; continuing status polling."
+                live_event_notice=1
+              fi
+            fi
+            if next_cursor="$(printf '%s' "$event_body" | json_field next_cursor 2>/dev/null)"; then
+              [[ "$next_cursor" =~ ^[0-9]+$ ]] && log_cursor="$next_cursor"
+            fi
             ;;
-          404|405) live_events=0 ;;
+          404|405)
+            echo
+            echo "> live logs: event stream unavailable from API (HTTP $event_code); showing status polling only."
+            live_events=0
+            live_event_notice=1
+            ;;
         esac
       fi
     fi

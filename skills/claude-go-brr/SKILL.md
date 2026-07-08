@@ -33,7 +33,9 @@ if [[ -x "$HOME/.claude/skills/claude-go-brr/scripts/submit.sh" ]]; then "$HOME/
 Invoke the Bash tool with `run_in_background: true`; do not append shell `&` to
 the command. Once the Bash tool confirms that the background task started, return
 control to the user immediately. Do not poll the task, retrieve its output, or wait
-for it to finish. Tell the user that `/tasks` can be used to inspect its output.
+for it to finish. Tell the user that `/tasks` can be used to inspect the local
+submit process output: polling progress, any live log events emitted by the host,
+and final saved output when the run completes.
 
 The script delegates to `offload.sh submit`, submits to `/v1/runs`, polls until completion, and saves returned patch-mode results under `.git/offload/<run_id>.patch` and `.git/offload/<run_id>.output.txt`.
 
