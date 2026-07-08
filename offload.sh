@@ -46,7 +46,7 @@ ENV_OFFLOAD_POLL_TIMEOUT="${OFFLOAD_POLL_TIMEOUT-}"
 [[ -n "$ENV_OFFLOAD_POLL_INTERVAL" ]] && OFFLOAD_POLL_INTERVAL="$ENV_OFFLOAD_POLL_INTERVAL"
 [[ -n "$ENV_OFFLOAD_POLL_TIMEOUT" ]] && OFFLOAD_POLL_TIMEOUT="$ENV_OFFLOAD_POLL_TIMEOUT"
 
-POLL_INTERVAL="${OFFLOAD_POLL_INTERVAL:-10}"
+POLL_INTERVAL="${OFFLOAD_POLL_INTERVAL:-2}"
 POLL_TIMEOUT="${OFFLOAD_POLL_TIMEOUT:-3600}"
 
 usage() {
@@ -83,6 +83,32 @@ for part in field.split("."):
 if value is None:
     value = ""
 print(json.dumps(value) if isinstance(value, (dict, list)) else value)' "$1"
+}
+
+render_live_events() {
+  python3 -c '
+import json
+import re
+import sys
+
+doc = json.load(sys.stdin)
+ansi = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+for event in doc.get("events") or []:
+    if not isinstance(event, dict):
+        continue
+    kind = event.get("kind")
+    text = ansi.sub("", str(event.get("text") or ""))
+    text = "".join(char for char in text if char in "\n\t" or ord(char) >= 32)
+    if kind == "claude_log" and text:
+        index = event.get("prompt_index", "?")
+        sys.stdout.write(f"[prompt {index}] {text}")
+        if not text.endswith("\n"):
+            sys.stdout.write("\n")
+    elif kind == "logs_truncated":
+        message = text or "log stream truncated"
+        sys.stdout.write(f"[live logs] {message}\n")
+sys.stdout.flush()
+'
 }
 
 repo_meta() {
@@ -451,6 +477,7 @@ env_cmd() {
 
 submit_cmd() {
   local folder wait individual_instances prompt branch dirty_files git_ref body resp run_id elapsed rec status
+  local live_events log_cursor event_http event_code event_body next_cursor
   folder="$PWD"
   wait=1
   individual_instances=0
@@ -529,9 +556,26 @@ PY
 
   echo "> waiting for completion (Ctrl-C to stop waiting; the run continues remotely)..."
   elapsed=0
+  live_events=1
+  log_cursor=0
   while (( elapsed < POLL_TIMEOUT )); do
     sleep "$POLL_INTERVAL"
     elapsed=$(( elapsed + POLL_INTERVAL ))
+    if [[ "$live_events" -eq 1 ]]; then
+      if event_http="$(curl -sS -H "Authorization: Bearer $OFFLOAD_API_KEY" -w $'\n%{http_code}' \
+        "$(api_url)/v1/runs/$run_id/events?after=$log_cursor&limit_bytes=262144")"; then
+        event_code="${event_http##*$'\n'}"
+        event_body="${event_http%$'\n'*}"
+        case "$event_code" in
+          200)
+            printf '%s' "$event_body" | render_live_events
+            next_cursor="$(printf '%s' "$event_body" | json_field next_cursor)"
+            [[ "$next_cursor" =~ ^[0-9]+$ ]] && log_cursor="$next_cursor"
+            ;;
+          404|405) live_events=0 ;;
+        esac
+      fi
+    fi
     rec="$(curl -fsS -H "Authorization: Bearer $OFFLOAD_API_KEY" "$(api_url)/v1/runs/$run_id")" || continue
     status="$(printf '%s' "$rec" | json_field status)"
     case "$status" in
