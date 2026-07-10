@@ -13,7 +13,7 @@ Use this skill when the user invokes `/claude-go-brr:setup`.
 Run this command exactly:
 
 ```bash
-if [[ -x "$HOME/.claude/skills/claude-go-brr/scripts/setup.sh" ]]; then "$HOME/.claude/skills/claude-go-brr/scripts/setup.sh" "$ARGUMENTS"; elif [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && -x "$CLAUDE_PLUGIN_ROOT/scripts/setup.sh" ]]; then "$CLAUDE_PLUGIN_ROOT/scripts/setup.sh" "$ARGUMENTS"; else .claude/skills/claude-go-brr/scripts/setup.sh "$ARGUMENTS"; fi
+if [[ -x "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" ]]; then "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" "$ARGUMENTS"; elif [[ -x "$HOME/.claude/skills/claude-go-brr/scripts/setup.sh" ]]; then "$HOME/.claude/skills/claude-go-brr/scripts/setup.sh" "$ARGUMENTS"; else .claude/skills/claude-go-brr/scripts/setup.sh "$ARGUMENTS"; fi
 ```
 
 If no device code is provided and auth already exists, the script requests the GitHub App install URL for the current repo. If auth does not exist, it starts GitHub login and prints a login URL plus the follow-up `/claude-go-brr:setup DEVICE_CODE` command.

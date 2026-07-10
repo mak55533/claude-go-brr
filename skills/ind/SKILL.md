@@ -22,7 +22,7 @@ For task submission with individual instances enabled, run the plugin submit scr
 from the current Claude Code working directory:
 
 ```bash
-if [[ -x "$HOME/.claude/skills/claude-go-brr/scripts/submit.sh" ]]; then "$HOME/.claude/skills/claude-go-brr/scripts/submit.sh" --individual-instances -- "$ARGUMENTS"; elif [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && -x "$CLAUDE_PLUGIN_ROOT/scripts/submit.sh" ]]; then "$CLAUDE_PLUGIN_ROOT/scripts/submit.sh" --individual-instances -- "$ARGUMENTS"; else .claude/skills/claude-go-brr/scripts/submit.sh --individual-instances -- "$ARGUMENTS"; fi
+if [[ -x "${CLAUDE_PLUGIN_ROOT}/scripts/submit.sh" ]]; then "${CLAUDE_PLUGIN_ROOT}/scripts/submit.sh" --individual-instances -- "$ARGUMENTS"; elif [[ -x "$HOME/.claude/skills/claude-go-brr/scripts/submit.sh" ]]; then "$HOME/.claude/skills/claude-go-brr/scripts/submit.sh" --individual-instances -- "$ARGUMENTS"; else .claude/skills/claude-go-brr/scripts/submit.sh --individual-instances -- "$ARGUMENTS"; fi
 ```
 
 The script delegates to `offload.sh submit`, splits `$ARGUMENTS` into one

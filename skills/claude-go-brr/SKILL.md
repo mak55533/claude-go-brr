@@ -27,7 +27,7 @@ For one-time setup, tell the user to invoke this Claude command:
 For task submission, run the plugin submit script from the current Claude Code working directory:
 
 ```bash
-if [[ -x "$HOME/.claude/skills/claude-go-brr/scripts/submit.sh" ]]; then "$HOME/.claude/skills/claude-go-brr/scripts/submit.sh" "$ARGUMENTS"; elif [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && -x "$CLAUDE_PLUGIN_ROOT/scripts/submit.sh" ]]; then "$CLAUDE_PLUGIN_ROOT/scripts/submit.sh" "$ARGUMENTS"; else .claude/skills/claude-go-brr/scripts/submit.sh "$ARGUMENTS"; fi
+if [[ -x "${CLAUDE_PLUGIN_ROOT}/scripts/submit.sh" ]]; then "${CLAUDE_PLUGIN_ROOT}/scripts/submit.sh" "$ARGUMENTS"; elif [[ -x "$HOME/.claude/skills/claude-go-brr/scripts/submit.sh" ]]; then "$HOME/.claude/skills/claude-go-brr/scripts/submit.sh" "$ARGUMENTS"; else .claude/skills/claude-go-brr/scripts/submit.sh "$ARGUMENTS"; fi
 ```
 
 The script delegates to `offload.sh submit`, submits to `/v1/runs`, polls until completion, and saves returned patch-mode results under `.git/offload/<run_id>.patch` and `.git/offload/<run_id>.output.txt`.
