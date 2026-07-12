@@ -29,13 +29,14 @@ The script delegates to `offload.sh submit`, splits `$ARGUMENTS` into one
 prompt per input line, submits to `/v1/runs` with `individual_instances: true`
 and `prompts: ["...", "..."]` instead of a single `prompt`, polls until
 completion, and saves returned patch-mode results under
-`.git/offload/<run_id>.patch` and `.git/offload/<run_id>.output.txt`.
+`.git/offload/<run_id>.patch` and `.git/offload/<run_id>.output.txt`, and
+streams worker output into a temporary log file.
 
 After the submit script exits, your task is complete. Display the script output
 directly and do not perform any additional analysis, edits, commands, follow-up
 tool calls, or local work based on the remote agent output. Always show the
-printed patch path, `git apply` command, output-file path, and full printed
-`agent output` block in the local Claude Code conversation. If the UI truncates
-or collapses that block, explicitly point the user to the full saved output file
-at `.git/offload/<run_id>.output.txt`. Then stop and wait for the user's next
-message. Do not rewrite the task prompt before submitting it.
+printed patch path, `git apply` command, output-file path, and temporary
+`worker log` path. Do not print the worker log's contents in the local Claude
+Code conversation; the path is what should appear in `/tasks`. Then stop and
+wait for the user's next message. Do not rewrite the task prompt before
+submitting it.
