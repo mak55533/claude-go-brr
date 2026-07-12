@@ -46,7 +46,7 @@ ENV_OFFLOAD_POLL_TIMEOUT="${OFFLOAD_POLL_TIMEOUT-}"
 [[ -n "$ENV_OFFLOAD_POLL_INTERVAL" ]] && OFFLOAD_POLL_INTERVAL="$ENV_OFFLOAD_POLL_INTERVAL"
 [[ -n "$ENV_OFFLOAD_POLL_TIMEOUT" ]] && OFFLOAD_POLL_TIMEOUT="$ENV_OFFLOAD_POLL_TIMEOUT"
 
-POLL_INTERVAL="${OFFLOAD_POLL_INTERVAL:-10}"
+POLL_INTERVAL="${OFFLOAD_POLL_INTERVAL:-5}"
 POLL_TIMEOUT="${OFFLOAD_POLL_TIMEOUT:-3600}"
 
 usage() {
@@ -83,6 +83,68 @@ for part in field.split("."):
 if value is None:
     value = ""
 print(json.dumps(value) if isinstance(value, (dict, list)) else value)' "$1"
+}
+
+render_live_events() {
+  python3 -c '
+import json
+import re
+import sys
+
+try:
+    doc = json.load(sys.stdin)
+except Exception as exc:
+    sys.stderr.write(f"[live logs] could not parse event stream response: {exc}\n")
+    sys.exit(2)
+
+ansi = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+rendered = 0
+for event in doc.get("events") or []:
+    if not isinstance(event, dict):
+        continue
+    kind = event.get("kind")
+    text = ansi.sub("", str(event.get("text") or ""))
+    text = "".join(char for char in text if char in "\n\t" or ord(char) >= 32)
+    if kind == "claude_log" and text:
+        index = event.get("prompt_index", "?")
+        sys.stdout.write(f"[prompt {index}] {text}")
+        if not text.endswith("\n"):
+            sys.stdout.write("\n")
+        rendered += 1
+    elif kind == "logs_truncated":
+        message = text or "log stream truncated"
+        sys.stdout.write(f"[live logs] {message}\n")
+        rendered += 1
+sys.stdout.flush()
+sys.exit(0 if rendered else 3)
+'
+}
+
+summarize_live_events() {
+  python3 -c '
+import json
+import sys
+
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+
+events = [event for event in (doc.get("events") or []) if isinstance(event, dict)]
+if not events:
+    print("event stream is empty")
+    sys.exit(0)
+
+kinds = []
+for event in events:
+    kind = str(event.get("kind") or event.get("type") or "unknown")
+    if kind not in kinds:
+        kinds.append(kind)
+preview = ", ".join(kinds[:6])
+if len(kinds) > 6:
+    preview += ", ..."
+print(f"received {len(events)} event(s), but none were printable claude_log entries (kinds: {preview})")
+'
 }
 
 repo_meta() {
@@ -484,6 +546,8 @@ env_cmd() {
 
 submit_cmd() {
   local folder wait individual_instances prompt branch dirty_files git_ref body resp run_id elapsed rec status log_file log_prefix
+  local live_events log_cursor event_http event_code event_body next_cursor
+  local live_event_notice render_status event_summary
   folder="$PWD"
   wait=1
   individual_instances=0
@@ -566,9 +630,48 @@ PY
 
   echo "> waiting for completion (Ctrl-C to stop waiting; the run continues remotely)..."
   elapsed=0
+  live_events=1
+  live_event_notice=0
+  log_cursor=0
   while (( elapsed < POLL_TIMEOUT )); do
     sleep "$POLL_INTERVAL"
     elapsed=$(( elapsed + POLL_INTERVAL ))
+    if [[ "$live_events" -eq 1 ]]; then
+      if event_http="$(curl -sS -H "Authorization: Bearer $OFFLOAD_API_KEY" -w $'\n%{http_code}' \
+        "$(api_url)/v1/runs/$run_id/events?after=$log_cursor&limit_bytes=262144")"; then
+        event_code="${event_http##*$'\n'}"
+        event_body="${event_http%$'\n'*}"
+        case "$event_code" in
+          200)
+            if printf '%s' "$event_body" | render_live_events; then
+              live_event_notice=1
+            else
+              render_status=$?
+              if [[ "$render_status" -eq 3 && "$live_event_notice" -eq 0 && "$elapsed" -ge 30 ]]; then
+                if event_summary="$(printf '%s' "$event_body" | summarize_live_events)"; then
+                  echo
+                  echo "> live logs: $event_summary; continuing status polling."
+                  live_event_notice=1
+                fi
+              elif [[ "$render_status" -ne 3 && "$live_event_notice" -eq 0 ]]; then
+                echo
+                echo "> live logs: event stream response was not readable; continuing status polling."
+                live_event_notice=1
+              fi
+            fi
+            if next_cursor="$(printf '%s' "$event_body" | json_field next_cursor 2>/dev/null)"; then
+              [[ "$next_cursor" =~ ^[0-9]+$ ]] && log_cursor="$next_cursor"
+            fi
+            ;;
+          404|405)
+            echo
+            echo "> live logs: event stream unavailable from API (HTTP $event_code); showing status polling only."
+            live_events=0
+            live_event_notice=1
+            ;;
+        esac
+      fi
+    fi
     rec="$(curl -fsS -H "Authorization: Bearer $OFFLOAD_API_KEY" "$(api_url)/v1/runs/$run_id")" || continue
     update_worker_log "$log_file" <<<"$rec"
     status="$(printf '%s' "$rec" | json_field status)"
