@@ -443,6 +443,39 @@ run_status() {
   echo
 }
 
+update_worker_log() {
+  local log_file="$1"
+
+  LOG_FILE="$log_file" python3 -c '
+import json
+import os
+from pathlib import Path
+import sys
+
+record = json.load(sys.stdin)
+if "agent_output" not in record:
+    raise SystemExit(0)
+
+incoming = record.get("agent_output") or ""
+if not isinstance(incoming, str):
+    incoming = json.dumps(incoming)
+
+path = Path(os.environ["LOG_FILE"])
+previous = path.read_text() if path.exists() else ""
+
+# The API may return the complete output collected so far or only the latest
+# chunk. Keep the former authoritative and append the latter without losing it.
+if incoming.startswith(previous):
+    content = incoming
+elif previous.startswith(incoming):
+    content = previous
+else:
+    content = previous + incoming
+
+path.write_text(content)
+'
+}
+
 print_env_metadata() {
   local folder_id="$1"
 
@@ -512,7 +545,7 @@ env_cmd() {
 }
 
 submit_cmd() {
-  local folder wait individual_instances prompt branch dirty_files git_ref body resp run_id elapsed rec status
+  local folder wait individual_instances prompt branch dirty_files git_ref body resp run_id elapsed rec status log_file log_prefix
   local live_events log_cursor event_http event_code event_body next_cursor
   local live_event_notice render_status event_summary
   folder="$PWD"
@@ -591,6 +624,10 @@ PY
     exit 0
   fi
 
+  log_prefix="${run_id//[^A-Za-z0-9._-]/-}"
+  log_file="$(mktemp "${TMPDIR:-/tmp}/offload-${log_prefix}.XXXXXX")"
+  echo "  worker log: $log_file"
+
   echo "> waiting for completion (Ctrl-C to stop waiting; the run continues remotely)..."
   elapsed=0
   live_events=1
@@ -636,6 +673,7 @@ PY
       fi
     fi
     rec="$(curl -fsS -H "Authorization: Bearer $OFFLOAD_API_KEY" "$(api_url)/v1/runs/$run_id")" || continue
+    update_worker_log "$log_file" <<<"$rec"
     status="$(printf '%s' "$rec" | json_field status)"
     case "$status" in
       ok_patch)
@@ -663,23 +701,20 @@ Path(os.environ["OUTPUT_FILE"]).write_text(rec.get("agent_output", ""))
         fi
         if [[ -s "$output_file" ]]; then
           echo "  output: $output_file"
-          echo
-          echo "----- agent output -----"
-          cat "$output_file"
-          echo "------------------------"
         fi
+        echo "  worker log: $log_file"
         exit 0
         ;;
       ok|ok_no_pr)
         echo "OK done."
-        printf '%s\n' "$rec"
+        echo "  worker log: $log_file"
         exit 0
         ;;
       run_failed|build_failed|error|auth_failed|env_failed|no_claude_wrapper|no_hybrid_proxy|no_claude_go_brr_binary|invalid_claude_go_brr_root|no_claude_binary|no_boto3|no_non_root_user|invalid_aws_config_dir)
         if [[ "$status" == "env_failed" ]]; then
           echo "x run $status - project environment injection failed; manage values in the browser: $(env_settings_url "$folder_id")" >&2
         else
-          echo "x run $status - inspect the remote worker logs" >&2
+          echo "x run $status - inspect the worker log: $log_file" >&2
         fi
         exit 1
         ;;

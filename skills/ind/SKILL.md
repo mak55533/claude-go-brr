@@ -22,7 +22,7 @@ For task submission with individual instances enabled, run the plugin submit scr
 from the current Claude Code working directory:
 
 ```bash
-if [[ -x "$HOME/.claude/skills/claude-go-brr/scripts/submit.sh" ]]; then "$HOME/.claude/skills/claude-go-brr/scripts/submit.sh" --individual-instances -- "$ARGUMENTS"; elif [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && -x "$CLAUDE_PLUGIN_ROOT/scripts/submit.sh" ]]; then "$CLAUDE_PLUGIN_ROOT/scripts/submit.sh" --individual-instances -- "$ARGUMENTS"; else .claude/skills/claude-go-brr/scripts/submit.sh --individual-instances -- "$ARGUMENTS"; fi
+if [[ -x "${CLAUDE_PLUGIN_ROOT}/scripts/submit.sh" ]]; then "${CLAUDE_PLUGIN_ROOT}/scripts/submit.sh" --individual-instances -- "$ARGUMENTS"; elif [[ -x "$HOME/.claude/skills/claude-go-brr/scripts/submit.sh" ]]; then "$HOME/.claude/skills/claude-go-brr/scripts/submit.sh" --individual-instances -- "$ARGUMENTS"; else .claude/skills/claude-go-brr/scripts/submit.sh --individual-instances -- "$ARGUMENTS"; fi
 ```
 
 Invoke the Bash tool with `run_in_background: true`; do not append shell `&` to
@@ -36,7 +36,9 @@ The script delegates to `offload.sh submit`, splits `$ARGUMENTS` into one
 prompt per input line, submits to `/v1/runs` with `individual_instances: true`
 and `prompts: ["...", "..."]` instead of a single `prompt`, polls until
 completion, and saves returned patch-mode results under
-`.git/offload/<run_id>.patch` and `.git/offload/<run_id>.output.txt`.
+`.git/offload/<run_id>.patch` and `.git/offload/<run_id>.output.txt`, and
+streams polled worker output into a temporary log file. The log path is printed
+for `/tasks`; its contents are not printed inline.
 
 After the background launch is confirmed, your task is complete. Report the
 background task identifier or output path returned by Bash, mention `/tasks`, and

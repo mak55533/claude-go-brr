@@ -13,7 +13,7 @@ Use this skill when the user invokes `/claude-go-brr:env`.
 Run this command exactly:
 
 ```bash
-if [[ -x "$HOME/.claude/skills/claude-go-brr/scripts/env.sh" ]]; then "$HOME/.claude/skills/claude-go-brr/scripts/env.sh" "$ARGUMENTS"; elif [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && -x "$CLAUDE_PLUGIN_ROOT/scripts/env.sh" ]]; then "$CLAUDE_PLUGIN_ROOT/scripts/env.sh" "$ARGUMENTS"; else .claude/skills/claude-go-brr/scripts/env.sh "$ARGUMENTS"; fi
+if [[ -x "${CLAUDE_PLUGIN_ROOT}/scripts/env.sh" ]]; then "${CLAUDE_PLUGIN_ROOT}/scripts/env.sh" "$ARGUMENTS"; elif [[ -x "$HOME/.claude/skills/claude-go-brr/scripts/env.sh" ]]; then "$HOME/.claude/skills/claude-go-brr/scripts/env.sh" "$ARGUMENTS"; else .claude/skills/claude-go-brr/scripts/env.sh "$ARGUMENTS"; fi
 ```
 
 The script delegates to `offload.sh env`, which derives the current project's `folder_id`, fetches metadata containing env variable key names only, and prints the project settings URL.
