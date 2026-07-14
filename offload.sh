@@ -216,9 +216,12 @@ for event in state["events"]:
     rendered.append(f"[prompt {event['prompt_index']}] {text}")
     if text and not text.endswith("\n"):
         rendered.append("\n")
-temporary_log = log_path.with_name(f"{log_path.name}.{os.getpid()}.tmp")
-temporary_log.write_text("".join(rendered))
-os.replace(temporary_log, log_path)
+rendered = "".join(rendered)
+committed_log = log_path.read_text() if log_path.exists() else ""
+if not rendered.startswith(committed_log):
+    protocol_error("local worker log does not match committed polling state")
+with log_path.open("a") as stream:
+    stream.write(rendered[len(committed_log):])
 
 print(f"{last_seq}\t{run['status']}\t{int(run['terminal'])}\t{int(has_more)}")
 PY

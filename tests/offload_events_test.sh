@@ -276,7 +276,9 @@ Path(sys.argv[1]).write_text(json.dumps({
 }))
 PY
 apply_events_response "$unit_body" unit 0 "$unit_state" "$unit_log" >/dev/null
+unit_log_inode="$(stat -f '%i' "$unit_log" 2>/dev/null || stat -c '%i' "$unit_log")"
 apply_events_response "$unit_body" unit 0 "$unit_state" "$unit_log" >/dev/null
+[[ "$(stat -f '%i' "$unit_log" 2>/dev/null || stat -c '%i' "$unit_log")" == "$unit_log_inode" ]] || fail "live worker log was replaced instead of appended"
 [[ "$(grep -c '^\[prompt 0\] same$' "$unit_log")" -eq 1 ]] || fail "same-cursor replay duplicated committed output"
 [[ "$(grep -c '^\[prompt 1\] other$' "$unit_log")" -eq 1 ]] || fail "multi-event batch was not applied atomically"
 
