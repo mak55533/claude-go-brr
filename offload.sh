@@ -85,66 +85,192 @@ if value is None:
 print(json.dumps(value) if isinstance(value, (dict, list)) else value)' "$1"
 }
 
-render_live_events() {
-  python3 -c '
+apply_events_response() {
+  local body_file="$1" run_id="$2" requested_after="$3" state_file="$4" log_file="$5"
+
+  python3 - "$body_file" "$run_id" "$requested_after" "$state_file" "$log_file" <<'PY'
 import json
+import math
+import os
+from pathlib import Path
 import re
 import sys
 
+body_path, requested_run_id, requested_after, state_path, log_path = sys.argv[1:]
+requested_after = int(requested_after)
+state_path = Path(state_path)
+log_path = Path(log_path)
+
+def protocol_error(message):
+    print(f"protocol error: {message}", file=sys.stderr)
+    raise SystemExit(65)
+
+def integer(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
 try:
-    doc = json.load(sys.stdin)
+    doc = json.loads(Path(body_path).read_text())
 except Exception as exc:
-    sys.stderr.write(f"[live logs] could not parse event stream response: {exc}\n")
-    sys.exit(2)
+    protocol_error(f"events response is not valid JSON: {exc}")
+
+if not isinstance(doc, dict):
+    protocol_error("events response must be an object")
+run = doc.get("run")
+if not isinstance(run, dict):
+    protocol_error("events response run must be an object")
+for field in ("run_id", "status", "terminal", "worker_id", "updated_at", "finished_at"):
+    if field not in run:
+        protocol_error(f"events response run.{field} is required")
+if run["run_id"] != requested_run_id:
+    protocol_error(f"events response run_id does not match {requested_run_id}")
+if not isinstance(run["status"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", run["status"]):
+    protocol_error("events response run.status must be a status identifier")
+if not isinstance(run["terminal"], bool):
+    protocol_error("events response run.terminal must be boolean")
+if run["worker_id"] is not None and not isinstance(run["worker_id"], str):
+    protocol_error("events response run.worker_id must be a string or null")
+if isinstance(run["updated_at"], bool) or not isinstance(run["updated_at"], (int, float)) or not math.isfinite(run["updated_at"]):
+    protocol_error("events response run.updated_at must be a finite number")
+if run["finished_at"] is not None and (isinstance(run["finished_at"], bool) or not isinstance(run["finished_at"], (int, float)) or not math.isfinite(run["finished_at"])):
+    protocol_error("events response run.finished_at must be a finite number or null")
+
+batches = doc.get("batches")
+last_seq = doc.get("last_seq")
+has_more = doc.get("has_more")
+if not isinstance(batches, list):
+    protocol_error("events response batches must be an array")
+if not integer(last_seq) or last_seq < 0:
+    protocol_error("events response last_seq must be a non-negative integer")
+if not isinstance(has_more, bool):
+    protocol_error("events response has_more must be boolean")
+if run["terminal"]:
+    if "result" not in doc or not isinstance(doc["result"], dict):
+        protocol_error("terminal events response result must be an object")
+    result = doc["result"]
+    if "patch" in result and not isinstance(result["patch"], str):
+        protocol_error("terminal events response result.patch must be a string")
+    if "prompt_results" in result and not isinstance(result["prompt_results"], list):
+        protocol_error("terminal events response result.prompt_results must be an array")
+elif "result" in doc:
+    protocol_error("non-terminal events response must not include result")
+
+new_events = []
+previous_seq = requested_after
+for batch_index, batch in enumerate(batches):
+    if not isinstance(batch, dict):
+        protocol_error(f"batch {batch_index} must be an object")
+    seq = batch.get("seq")
+    if not integer(seq) or seq != previous_seq + 1:
+        protocol_error(f"batch {batch_index} seq must be contiguous after {previous_seq}")
+    events = batch.get("events")
+    if not isinstance(events, list):
+        protocol_error(f"batch {seq} events must be an array")
+    prompt_indexes = set()
+    batch_events = []
+    for event_index, event in enumerate(events):
+        if not isinstance(event, dict):
+            protocol_error(f"batch {seq} event {event_index} must be an object")
+        prompt_index = event.get("prompt_index")
+        text = event.get("text")
+        if not integer(prompt_index) or prompt_index < 0:
+            protocol_error(f"batch {seq} event {event_index} prompt_index must be a non-negative integer")
+        if prompt_index in prompt_indexes:
+            protocol_error(f"batch {seq} contains duplicate prompt_index {prompt_index}")
+        if not isinstance(text, str):
+            protocol_error(f"batch {seq} event {event_index} text must be a string")
+        prompt_indexes.add(prompt_index)
+        batch_events.append({"seq": seq, "prompt_index": prompt_index, "text": text})
+    new_events.extend(batch_events)
+    previous_seq = seq
+
+expected_last_seq = batches[-1]["seq"] if batches else requested_after
+if last_seq != expected_last_seq:
+    protocol_error(f"events response last_seq must equal {expected_last_seq}")
+
+try:
+    state = json.loads(state_path.read_text()) if state_path.exists() else {"after": 0, "events": []}
+    committed_after = state["after"]
+    committed_events = state["events"]
+    if not integer(committed_after) or not isinstance(committed_events, list):
+        raise ValueError("invalid polling state")
+except Exception as exc:
+    protocol_error(f"local polling state is invalid: {exc}")
+
+if committed_after == requested_after:
+    state = {"after": last_seq, "events": committed_events + new_events}
+    temporary_state = state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")
+    temporary_state.write_text(json.dumps(state))
+    os.replace(temporary_state, state_path)
+elif committed_after == last_seq and batches:
+    # A previous application committed before its caller observed success.
+    # Re-render the committed state without duplicating sequence batches.
+    state = {"after": committed_after, "events": committed_events}
+else:
+    protocol_error(f"local polling cursor {committed_after} does not match requested cursor {requested_after}")
 
 ansi = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-rendered = 0
-for event in doc.get("events") or []:
-    if not isinstance(event, dict):
-        continue
-    kind = event.get("kind")
-    text = ansi.sub("", str(event.get("text") or ""))
+rendered = []
+for event in state["events"]:
+    text = ansi.sub("", event["text"])
     text = "".join(char for char in text if char in "\n\t" or ord(char) >= 32)
-    if kind == "claude_log" and text:
-        index = event.get("prompt_index", "?")
-        sys.stdout.write(f"[prompt {index}] {text}")
-        if not text.endswith("\n"):
-            sys.stdout.write("\n")
-        rendered += 1
-    elif kind == "logs_truncated":
-        message = text or "log stream truncated"
-        sys.stdout.write(f"[live logs] {message}\n")
-        rendered += 1
-sys.stdout.flush()
-sys.exit(0 if rendered else 3)
-'
+    rendered.append(f"[prompt {event['prompt_index']}] {text}")
+    if text and not text.endswith("\n"):
+        rendered.append("\n")
+temporary_log = log_path.with_name(f"{log_path.name}.{os.getpid()}.tmp")
+temporary_log.write_text("".join(rendered))
+os.replace(temporary_log, log_path)
+
+print(f"{last_seq}\t{run['status']}\t{int(run['terminal'])}\t{int(has_more)}")
+PY
 }
 
-summarize_live_events() {
-  python3 -c '
-import json
+json_error_message() {
+  python3 -c 'import json, pathlib, sys
+try:
+    doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
+    print(doc.get("error", "") if isinstance(doc, dict) else "")
+except Exception:
+    print("")' "$1"
+}
+
+retry_after_seconds() {
+  python3 - "$1" <<'PY'
+import email.utils
+import math
+from pathlib import Path
+import time
 import sys
 
+value = ""
+for line in Path(sys.argv[1]).read_text(errors="replace").splitlines():
+    if line.lower().startswith("retry-after:"):
+        value = line.split(":", 1)[1].strip()
+if value.isdigit():
+    print(value)
+elif value:
+    try:
+        print(max(0, math.ceil(email.utils.parsedate_to_datetime(value).timestamp() - time.time())))
+    except Exception:
+        pass
+PY
+}
+
+bounded_backoff() {
+  python3 -c 'import sys
+attempt = int(sys.argv[1])
 try:
-    doc = json.load(sys.stdin)
-except Exception:
-    sys.exit(1)
+    base = max(1.0, float(sys.argv[2]))
+except ValueError:
+    base = 1.0
+print(min(30.0, base * (2 ** min(attempt - 1, 5))))' "$1" "$POLL_INTERVAL"
+}
 
-events = [event for event in (doc.get("events") or []) if isinstance(event, dict)]
-if not events:
-    print("event stream is empty")
-    sys.exit(0)
-
-kinds = []
-for event in events:
-    kind = str(event.get("kind") or event.get("type") or "unknown")
-    if kind not in kinds:
-        kinds.append(kind)
-preview = ", ".join(kinds[:6])
-if len(kinds) > 6:
-    preview += ", ..."
-print(f"received {len(events)} event(s), but none were printable claude_log entries (kinds: {preview})")
-'
+poll_sleep() {
+  local delay="$1" started="$2" remaining
+  remaining=$(( POLL_TIMEOUT - (SECONDS - started) ))
+  (( remaining > 0 )) || return 0
+  delay="$(python3 -c 'import sys; print(min(float(sys.argv[1]), float(sys.argv[2])))' "$delay" "$remaining")"
+  sleep "$delay"
 }
 
 repo_meta() {
@@ -443,37 +569,27 @@ run_status() {
   echo
 }
 
-update_worker_log() {
-  local log_file="$1"
+save_run_result() {
+  local body_file="$1" log_file="$2" patch_file="$3" output_file="$4"
 
-  LOG_FILE="$log_file" python3 -c '
+  python3 - "$body_file" "$log_file" "$patch_file" "$output_file" <<'PY'
 import json
-import os
 from pathlib import Path
 import sys
 
-record = json.load(sys.stdin)
-if "agent_output" not in record:
-    raise SystemExit(0)
-
-incoming = record.get("agent_output") or ""
-if not isinstance(incoming, str):
-    incoming = json.dumps(incoming)
-
-path = Path(os.environ["LOG_FILE"])
-previous = path.read_text() if path.exists() else ""
-
-# The API may return the complete output collected so far or only the latest
-# chunk. Keep the former authoritative and append the latter without losing it.
-if incoming.startswith(previous):
-    content = incoming
-elif previous.startswith(incoming):
-    content = previous
-else:
-    content = previous + incoming
-
-path.write_text(content)
-'
+body_path, log_path, patch_path, output_path = map(Path, sys.argv[1:])
+doc = json.loads(body_path.read_text())
+if not doc["run"]["terminal"] or not isinstance(doc.get("result"), dict):
+    print("protocol error: attempted to consume a non-terminal run result", file=sys.stderr)
+    raise SystemExit(65)
+result = doc["result"]
+patch = result.get("patch", "")
+if not isinstance(patch, str):
+    print("protocol error: terminal result.patch must be a string", file=sys.stderr)
+    raise SystemExit(65)
+patch_path.write_text(patch)
+output_path.write_text(log_path.read_text())
+PY
 }
 
 print_env_metadata() {
@@ -545,9 +661,8 @@ env_cmd() {
 }
 
 submit_cmd() {
-  local folder wait individual_instances prompt branch dirty_files git_ref body resp run_id elapsed rec status log_file log_prefix
-  local live_events log_cursor event_http event_code event_body next_cursor
-  local live_event_notice render_status event_summary
+  local folder wait individual_instances prompt branch dirty_files git_ref body resp run_id elapsed status log_file log_prefix
+  local after apply_meta event_code error_message has_more header_file next_after poll_dir remaining retry_attempt retry_delay started state_file terminal
   folder="$PWD"
   wait=1
   individual_instances=0
@@ -629,97 +744,103 @@ PY
   echo "  worker log: $log_file"
 
   echo "> waiting for completion (Ctrl-C to stop waiting; the run continues remotely)..."
-  elapsed=0
-  live_events=1
-  live_event_notice=0
-  log_cursor=0
-  while (( elapsed < POLL_TIMEOUT )); do
-    sleep "$POLL_INTERVAL"
-    elapsed=$(( elapsed + POLL_INTERVAL ))
-    if [[ "$live_events" -eq 1 ]]; then
-      if event_http="$(curl -sS -H "Authorization: Bearer $OFFLOAD_API_KEY" -w $'\n%{http_code}' \
-        "$(api_url)/v1/runs/$run_id/events?after=$log_cursor&limit_bytes=262144")"; then
-        event_code="${event_http##*$'\n'}"
-        event_body="${event_http%$'\n'*}"
-        case "$event_code" in
-          200)
-            if printf '%s' "$event_body" | render_live_events; then
-              live_event_notice=1
-            else
-              render_status=$?
-              if [[ "$render_status" -eq 3 && "$live_event_notice" -eq 0 && "$elapsed" -ge 30 ]]; then
-                if event_summary="$(printf '%s' "$event_body" | summarize_live_events)"; then
-                  echo
-                  echo "> live logs: $event_summary; continuing status polling."
-                  live_event_notice=1
-                fi
-              elif [[ "$render_status" -ne 3 && "$live_event_notice" -eq 0 ]]; then
-                echo
-                echo "> live logs: event stream response was not readable; continuing status polling."
-                live_event_notice=1
-              fi
-            fi
-            if next_cursor="$(printf '%s' "$event_body" | json_field next_cursor 2>/dev/null)"; then
-              [[ "$next_cursor" =~ ^[0-9]+$ ]] && log_cursor="$next_cursor"
-            fi
-            ;;
-          404|405)
-            echo
-            echo "> live logs: event stream unavailable from API (HTTP $event_code); showing status polling only."
-            live_events=0
-            live_event_notice=1
-            ;;
-        esac
-      fi
+  poll_dir="$(mktemp -d "${TMPDIR:-/tmp}/offload-poll-${log_prefix}.XXXXXX")"
+  header_file="$poll_dir/headers"
+  state_file="$poll_dir/state.json"
+  trap 'rm -rf "$poll_dir"' EXIT
+  trap 'exit 130' INT TERM HUP
+  after=0
+  retry_attempt=0
+  started=$SECONDS
+  while (( SECONDS - started < POLL_TIMEOUT )); do
+    remaining=$(( POLL_TIMEOUT - (SECONDS - started) ))
+    : > "$header_file"
+    : > "$poll_dir/body"
+    if ! event_code="$(curl -sS --max-time "$remaining" -H "Authorization: Bearer $OFFLOAD_API_KEY" -H "Accept: application/json" --dump-header "$header_file" --output "$poll_dir/body" --write-out '%{http_code}' "$(api_url)/v1/runs/$run_id/events?after=$after&limit_bytes=262144")"; then
+      retry_attempt=$(( retry_attempt + 1 ))
+      retry_delay="$(bounded_backoff "$retry_attempt")"
+      echo "> polling request failed; retrying after ${retry_delay}s with after=$after" >&2
+      poll_sleep "$retry_delay" "$started"
+      continue
     fi
-    rec="$(curl -fsS -H "Authorization: Bearer $OFFLOAD_API_KEY" "$(api_url)/v1/runs/$run_id")" || continue
-    update_worker_log "$log_file" <<<"$rec"
-    status="$(printf '%s' "$rec" | json_field status)"
-    case "$status" in
-      ok_patch)
-        local out_dir patch_file output_file
-        out_dir="$(git rev-parse --git-path offload)"
-        mkdir -p "$out_dir"
-        patch_file="$out_dir/$run_id.patch"
-        output_file="$out_dir/$run_id.output.txt"
-        PATCH_FILE="$patch_file" OUTPUT_FILE="$output_file" python3 -c '
-import json
-import os
-from pathlib import Path
-import sys
 
-rec = json.load(sys.stdin)
-Path(os.environ["PATCH_FILE"]).write_text(rec.get("patch", ""))
-Path(os.environ["OUTPUT_FILE"]).write_text(rec.get("agent_output", ""))
-' <<<"$rec"
-        echo "OK done."
-        if [[ -s "$patch_file" ]]; then
-          echo "  patch:  $patch_file"
-          echo "  apply:  git apply $patch_file"
-        else
-          echo "  patch:  no changes"
+    case "$event_code" in
+      200)
+        apply_meta="$(apply_events_response "$poll_dir/body" "$run_id" "$after" "$state_file" "$log_file")" || exit $?
+        IFS=$'\t' read -r next_after status terminal has_more <<<"$apply_meta"
+        after="$next_after"
+        retry_attempt=0
+        elapsed=$(( SECONDS - started ))
+        printf '  ...%s (%ds)\r' "$status" "$elapsed"
+        if [[ "$has_more" -eq 1 ]]; then
+          continue
         fi
-        if [[ -s "$output_file" ]]; then
-          echo "  output: $output_file"
+        if [[ "$terminal" -eq 1 ]]; then
+          echo
+          if [[ "$status" == "ok_patch" || "$status" == "ok" || "$status" == "ok_no_pr" ]]; then
+            local out_dir patch_file output_file
+            out_dir="$(git rev-parse --git-path offload)"
+            mkdir -p "$out_dir"
+            patch_file="$out_dir/$run_id.patch"
+            output_file="$out_dir/$run_id.output.txt"
+            save_run_result "$poll_dir/body" "$log_file" "$patch_file" "$output_file"
+            echo "OK $status done."
+            if [[ "$status" == "ok_patch" && -s "$patch_file" ]]; then
+              echo "  patch:  $patch_file"
+              echo "  apply:  git apply $patch_file"
+            elif [[ "$status" == "ok_patch" ]]; then
+              echo "  patch:  no changes"
+            fi
+            [[ -s "$output_file" ]] && echo "  output: $output_file"
+            echo "  worker log: $log_file"
+            exit 0
+          fi
+          if [[ "$status" == "env_failed" ]]; then
+            echo "x run $status - project environment injection failed; manage values in the browser: $(env_settings_url "$folder_id")" >&2
+          else
+            echo "x run $status - inspect the worker log: $log_file" >&2
+          fi
+          exit 1
         fi
-        echo "  worker log: $log_file"
-        exit 0
+        poll_sleep "$POLL_INTERVAL" "$started"
         ;;
-      ok|ok_no_pr)
-        echo "OK done."
-        echo "  worker log: $log_file"
-        exit 0
+      400)
+        error_message="$(json_error_message "$poll_dir/body")"
+        echo "protocol error: polling request rejected (HTTP 400${error_message:+: $error_message})" >&2
+        exit 65
         ;;
-      run_failed|build_failed|error|auth_failed|env_failed|no_claude_wrapper|no_hybrid_proxy|no_claude_go_brr_binary|invalid_claude_go_brr_root|no_claude_binary|no_boto3|no_non_root_user|invalid_aws_config_dir)
-        if [[ "$status" == "env_failed" ]]; then
-          echo "x run $status - project environment injection failed; manage values in the browser: $(env_settings_url "$folder_id")" >&2
-        else
-          echo "x run $status - inspect the worker log: $log_file" >&2
-        fi
-        exit 1
+      401)
+        error_message="$(json_error_message "$poll_dir/body")"
+        echo "authentication error: polling API key rejected (HTTP 401${error_message:+: $error_message})" >&2
+        exit 77
         ;;
-      queued|running|"")
-        printf '  ...%s (%ds)\r' "${status:-pending}" "$elapsed"
+      403)
+        error_message="$(json_error_message "$poll_dir/body")"
+        echo "authorization error: cannot access run $run_id (HTTP 403${error_message:+: $error_message})" >&2
+        exit 77
+        ;;
+      404)
+        error_message="$(json_error_message "$poll_dir/body")"
+        echo "not-found protocol error: unknown run_id $run_id (HTTP 404${error_message:+: $error_message})" >&2
+        exit 65
+        ;;
+      429)
+        retry_attempt=$(( retry_attempt + 1 ))
+        retry_delay="$(retry_after_seconds "$header_file")"
+        [[ -n "$retry_delay" ]] || retry_delay="$(bounded_backoff "$retry_attempt")"
+        echo "> polling rate limited; retrying after ${retry_delay}s with after=$after" >&2
+        poll_sleep "$retry_delay" "$started"
+        ;;
+      5??)
+        retry_attempt=$(( retry_attempt + 1 ))
+        retry_delay="$(bounded_backoff "$retry_attempt")"
+        echo "> polling API returned HTTP $event_code; retrying after ${retry_delay}s with after=$after" >&2
+        poll_sleep "$retry_delay" "$started"
+        ;;
+      *)
+        error_message="$(json_error_message "$poll_dir/body")"
+        echo "protocol error: polling API returned HTTP $event_code${error_message:+: $error_message}" >&2
+        exit 65
         ;;
     esac
   done
@@ -743,4 +864,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
