@@ -147,6 +147,8 @@ if run["terminal"]:
     if "result" not in doc or not isinstance(doc["result"], dict):
         protocol_error("terminal events response result must be an object")
     result = doc["result"]
+    if "agent_output" not in result or not isinstance(result["agent_output"], str):
+        protocol_error("terminal events response result.agent_output must be a string")
     if "patch" in result and not isinstance(result["patch"], str):
         protocol_error("terminal events response result.patch must be a string")
     if "prompt_results" in result and not isinstance(result["prompt_results"], list):
@@ -573,14 +575,14 @@ run_status() {
 }
 
 save_run_result() {
-  local body_file="$1" log_file="$2" patch_file="$3" output_file="$4"
+  local body_file="$1" patch_file="$2" output_file="$3"
 
-  python3 - "$body_file" "$log_file" "$patch_file" "$output_file" <<'PY'
+  python3 - "$body_file" "$patch_file" "$output_file" <<'PY'
 import json
 from pathlib import Path
 import sys
 
-body_path, log_path, patch_path, output_path = map(Path, sys.argv[1:])
+body_path, patch_path, output_path = map(Path, sys.argv[1:])
 doc = json.loads(body_path.read_text())
 if not doc["run"]["terminal"] or not isinstance(doc.get("result"), dict):
     print("protocol error: attempted to consume a non-terminal run result", file=sys.stderr)
@@ -591,7 +593,7 @@ if not isinstance(patch, str):
     print("protocol error: terminal result.patch must be a string", file=sys.stderr)
     raise SystemExit(65)
 patch_path.write_text(patch)
-output_path.write_text(log_path.read_text())
+output_path.write_text(result["agent_output"])
 PY
 }
 
@@ -786,7 +788,7 @@ PY
             mkdir -p "$out_dir"
             patch_file="$out_dir/$run_id.patch"
             output_file="$out_dir/$run_id.output.txt"
-            save_run_result "$poll_dir/body" "$log_file" "$patch_file" "$output_file"
+            save_run_result "$poll_dir/body" "$patch_file" "$output_file"
             echo "OK $status done."
             if [[ "$status" == "ok_patch" && -s "$patch_file" ]]; then
               echo "  patch:  $patch_file"
@@ -794,8 +796,11 @@ PY
             elif [[ "$status" == "ok_patch" ]]; then
               echo "  patch:  no changes"
             fi
-            [[ -s "$output_file" ]] && echo "  output: $output_file"
+            echo "  output: $output_file"
             echo "  worker log: $log_file"
+            echo
+            echo "Agent output:"
+            printf '%s\n' "$(<"$output_file")"
             exit 0
           fi
           if [[ "$status" == "env_failed" ]]; then

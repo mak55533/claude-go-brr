@@ -30,15 +30,15 @@ the command. Once the Bash tool confirms that the background task started, retur
 control to the user immediately. Do not poll the task, retrieve its output, or wait
 for it to finish. Tell the user that `/tasks` can be used to inspect the local
 submit process output: polling progress, any live log events emitted by the host,
-and final saved output when the run completes.
+and the final agent output when the run completes.
 
 The script delegates to `offload.sh submit`, splits `$ARGUMENTS` into one
 prompt per input line, submits to `/v1/runs` with `individual_instances: true`
 and `prompts: ["...", "..."]` instead of a single `prompt`, polls until
-completion, and saves returned patch-mode results under
-`.git/offload/<run_id>.patch` and `.git/offload/<run_id>.output.txt`, and
-streams polled worker output into a temporary log file. The log path is printed
-for `/tasks`; its contents are not printed inline.
+completion, saves `result.patch` under `.git/offload/<run_id>.patch` and
+`result.agent_output` under `.git/offload/<run_id>.output.txt`, and displays
+that agent output when the background task finishes. Polled worker events
+remain in the separate temporary worker log.
 
 After the background launch is confirmed, your task is complete. Report the
 background task identifier or output path returned by Bash, mention `/tasks`, and
