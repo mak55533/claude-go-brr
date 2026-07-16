@@ -47,7 +47,7 @@ def run_record(run_id, status, terminal):
         "finished_at": time.time() if terminal else None,
     }
 
-def events_response(run_id, status, terminal, batches, last_seq, has_more, patch=""):
+def events_response(run_id, status, terminal, batches, last_seq, has_more, patch="", agent_output="Combined output..."):
     data = {
         "run": run_record(run_id, status, terminal),
         "batches": batches,
@@ -55,7 +55,7 @@ def events_response(run_id, status, terminal, batches, last_seq, has_more, patch
         "has_more": has_more,
     }
     if terminal:
-        data["result"] = {"patch": patch, "prompt_results": []}
+        data["result"] = {"patch": patch, "agent_output": agent_output, "prompt_results": []}
     return data
 
 class Handler(BaseHTTPRequestHandler):
@@ -125,9 +125,9 @@ class Handler(BaseHTTPRequestHandler):
             elif poll == 2:
                 self.send_json(events_response(run_id, "running", False, [{"seq": 1, "events": [{"prompt_index": 0, "text": "first worker line\n"}, {"prompt_index": 1, "text": "<script>pwned()</script>\n"}]}], 1, True))
             elif poll == 3:
-                self.send_json(events_response(run_id, "ok_patch", True, [{"seq": 2, "events": [{"prompt_index": 0, "text": "same delta\n"}, {"prompt_index": 1, "text": "prompt one final\n"}]}], 2, True, "premature patch\n"))
+                self.send_json(events_response(run_id, "ok_patch", True, [{"seq": 2, "events": [{"prompt_index": 0, "text": "same delta\n"}, {"prompt_index": 1, "text": "prompt one final\n"}]}], 2, True, "premature patch\n", "Premature agent output."))
             else:
-                self.send_json(events_response(run_id, "ok_patch", True, [{"seq": 3, "events": [{"prompt_index": 0, "text": "same delta\n"}]}], 3, False, "final patch\n"))
+                self.send_json(events_response(run_id, "ok_patch", True, [{"seq": 3, "events": [{"prompt_index": 0, "text": "same delta\n"}]}], 3, False, "final patch\n", "Final agent output."))
             return
         if scenario == "network_retry" and poll == 1:
             self.connection.shutdown(socket.SHUT_RDWR)
@@ -186,7 +186,9 @@ happy_log="$(sed -n 's/^  worker log: //p' "$RUN_OUTPUT" | head -n 1)"
 [[ "$(<"$happy_log")" == *'[prompt 1] <script>pwned()</script>'* ]] || fail "prompt 1 text was not preserved as plain text"
 [[ "$(grep -c '^\[prompt 0\] same delta$' "$happy_log")" -eq 2 ]] || fail "identical deltas were deduplicated or duplicated"
 [[ "$(<"$ROOT/.git/offload/$happy_run_id.patch")" == "final patch" ]] || fail "terminal result was consumed before stored batches were drained"
-[[ "$(<"$ROOT/.git/offload/$happy_run_id.output.txt")" == "$(<"$happy_log")" ]] || fail "saved output differs from the committed live output"
+[[ "$(<"$ROOT/.git/offload/$happy_run_id.output.txt")" == "Final agent output." ]] || fail "saved output is not result.agent_output"
+[[ "$happy_output" == *$'Agent output:\nFinal agent output.'* ]] || fail "result.agent_output was not displayed"
+[[ "$happy_output" != *'Premature agent output.'* ]] || fail "terminal result was displayed before stored batches were drained"
 
 run_client network_retry 0
 [[ "$(<"$RUN_OUTPUT")" == *'retrying after 1.0s with after=0'* ]] || fail "network retry did not retain cursor 0"
