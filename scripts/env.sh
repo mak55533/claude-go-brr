@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
+[[ $# -eq 1 && -z "$1" ]] && set --
+
 if [[ -n "${OFFLOAD_BIN:-}" ]]; then
   CLIENT="$OFFLOAD_BIN"
 else
