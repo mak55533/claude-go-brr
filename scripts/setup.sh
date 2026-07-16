@@ -97,7 +97,7 @@ case "${1:-}" in
   "")
     if [[ -n "${OFFLOAD_API_KEY:-}" ]] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       require_matching_saved_login
-      "$CLIENT" github install-url
+      "$CLIENT" github install-url --remote "${OFFLOAD_REMOTE:-origin}"
       exit 0
     fi
     RESP="$("$CLIENT" auth start "$@")"
@@ -133,7 +133,7 @@ case "${1:-}" in
       reload_saved_config
       require_matching_saved_login
       echo "Requesting GitHub App install URL for this repo..."
-      "$CLIENT" github install-url || {
+      "$CLIENT" github install-url --remote "${OFFLOAD_REMOTE:-origin}" || {
         echo
         echo "Auth is saved, but repo approval URL could not be created automatically."
         echo "Run /claude-go-brr:setup from the target repo, or run:"
