@@ -783,17 +783,28 @@ PY
         if [[ "$terminal" -eq 1 ]]; then
           echo
           if [[ "$status" == "ok_patch" || "$status" == "ok" || "$status" == "ok_no_pr" ]]; then
-            local out_dir patch_file output_file
+            local out_dir patch_file output_file patch_check_file patch_check_failed
             out_dir="$(git rev-parse --git-path offload)"
             mkdir -p "$out_dir"
+            out_dir="$(cd "$out_dir" && pwd)"
             patch_file="$out_dir/$run_id.patch"
             output_file="$out_dir/$run_id.output.txt"
+            patch_check_file="$out_dir/$run_id.patch-check.txt"
             save_run_result "$poll_dir/body" "$patch_file" "$output_file"
             echo "OK $status done."
+            patch_check_failed=0
             if [[ "$status" == "ok_patch" && -s "$patch_file" ]]; then
-              echo "  patch:  $patch_file"
-              echo "  apply:  git apply $patch_file"
+              if git -C "$toplevel" apply --check "$patch_file" >"$patch_check_file" 2>&1; then
+                rm -f "$patch_check_file"
+                echo "  patch:  $patch_file"
+                echo "  apply:  git apply $patch_file"
+              else
+                patch_check_failed=1
+                echo "  patch:  $patch_file"
+                echo "  check:  failed (details: $patch_check_file)"
+              fi
             elif [[ "$status" == "ok_patch" ]]; then
+              rm -f "$patch_check_file"
               echo "  patch:  no changes"
             fi
             echo "  output: $output_file"
@@ -801,6 +812,12 @@ PY
             echo
             echo "Agent output:"
             printf '%s\n' "$(<"$output_file")"
+            if [[ "$patch_check_failed" -ne 0 ]]; then
+              echo "x returned patch failed git apply --check; it may be corrupted in transport or not match this checkout" >&2
+              echo "  patch: $patch_file" >&2
+              echo "  check: $patch_check_file" >&2
+              exit 65
+            fi
             exit 0
           fi
           if [[ "$status" == "env_failed" ]]; then

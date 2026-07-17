@@ -13,6 +13,7 @@ cleanup() {
   [[ -z "$SERVER_PID" ]] || { kill "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true; }
   find "$ROOT/.git/offload" -maxdepth 1 -type f -name 'test-*.patch' -delete 2>/dev/null || true
   find "$ROOT/.git/offload" -maxdepth 1 -type f -name 'test-*.output.txt' -delete 2>/dev/null || true
+  find "$ROOT/.git/offload" -maxdepth 1 -type f -name 'test-*.patch-check.txt' -delete 2>/dev/null || true
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -127,7 +128,11 @@ class Handler(BaseHTTPRequestHandler):
             elif poll == 3:
                 self.send_json(events_response(run_id, "ok_patch", True, [{"seq": 2, "events": [{"prompt_index": 0, "text": "same delta\n"}, {"prompt_index": 1, "text": "prompt one final\n"}]}], 2, True, "premature patch\n", "Premature agent output."))
             else:
-                self.send_json(events_response(run_id, "ok_patch", True, [{"seq": 3, "events": [{"prompt_index": 0, "text": "same delta\n"}]}], 3, False, "final patch\n", "Final agent output."))
+                patch = "diff --git a/offload-validation-test.txt b/offload-validation-test.txt\nnew file mode 100644\nindex 0000000..e69de29\n"
+                self.send_json(events_response(run_id, "ok_patch", True, [{"seq": 3, "events": [{"prompt_index": 0, "text": "same delta\n"}]}], 3, False, patch, "Final agent output."))
+            return
+        if scenario == "invalid_patch":
+            self.send_json(events_response(run_id, "ok_patch", True, [], after, False, "not a patch\n", "Invalid patch output."))
             return
         if scenario == "network_retry" and poll == 1:
             self.connection.shutdown(socket.SHUT_RDWR)
@@ -185,10 +190,18 @@ happy_log="$(sed -n 's/^  worker log: //p' "$RUN_OUTPUT" | head -n 1)"
 [[ "$(<"$happy_log")" == *'[prompt 0] first worker line'* ]] || fail "prompt 0 output missing"
 [[ "$(<"$happy_log")" == *'[prompt 1] <script>pwned()</script>'* ]] || fail "prompt 1 text was not preserved as plain text"
 [[ "$(grep -c '^\[prompt 0\] same delta$' "$happy_log")" -eq 2 ]] || fail "identical deltas were deduplicated or duplicated"
-[[ "$(<"$ROOT/.git/offload/$happy_run_id.patch")" == "final patch" ]] || fail "terminal result was consumed before stored batches were drained"
+[[ "$(<"$ROOT/.git/offload/$happy_run_id.patch")" == *"offload-validation-test.txt"* ]] || fail "terminal result was consumed before stored batches were drained"
 [[ "$(<"$ROOT/.git/offload/$happy_run_id.output.txt")" == "Final agent output." ]] || fail "saved output is not result.agent_output"
+[[ ! -e "$ROOT/.git/offload/$happy_run_id.patch-check.txt" ]] || fail "successful patch check report was not removed"
 [[ "$happy_output" == *$'Agent output:\nFinal agent output.'* ]] || fail "result.agent_output was not displayed"
 [[ "$happy_output" != *'Premature agent output.'* ]] || fail "terminal result was displayed before stored batches were drained"
+
+run_client invalid_patch 65
+invalid_patch_run_id="$(sed -n 's/^  run_id=//p' "$RUN_OUTPUT" | tail -n 1)"
+[[ "$(<"$ROOT/.git/offload/$invalid_patch_run_id.patch")" == "not a patch" ]] || fail "invalid patch was not preserved"
+[[ -s "$ROOT/.git/offload/$invalid_patch_run_id.patch-check.txt" ]] || fail "invalid patch check details were not preserved"
+[[ "$(<"$RUN_OUTPUT")" == *'returned patch failed git apply --check'* ]] || fail "invalid patch failure was not surfaced"
+[[ "$(<"$RUN_OUTPUT")" == *$'Agent output:\nInvalid patch output.'* ]] || fail "invalid patch agent output was not displayed"
 
 run_client network_retry 0
 [[ "$(<"$RUN_OUTPUT")" == *'retrying after 1.0s with after=0'* ]] || fail "network retry did not retain cursor 0"

@@ -37,7 +37,7 @@ for it to finish. Tell the user that `/tasks` can be used to inspect the local
 submit process output: polling progress, any live log events emitted by the host,
 and the final agent output when the run completes.
 
-The script delegates to `offload.sh submit`, submits to `/v1/runs`, polls until completion, saves `result.patch` under `.git/offload/<run_id>.patch` and `result.agent_output` under `.git/offload/<run_id>.output.txt`, and displays that agent output when the background task finishes. Polled worker events remain in the separate temporary worker log.
+The script delegates to `offload.sh submit`, submits to `/v1/runs`, polls until completion, saves `result.patch` under `.git/offload/<run_id>.patch` and `result.agent_output` under `.git/offload/<run_id>.output.txt`, and displays that agent output when the background task finishes. Non-empty patch results are validated with `git apply --check`; failures retain details under `.git/offload/<run_id>.patch-check.txt` and exit 65. Polled worker events remain in the separate temporary worker log.
 
 After the background launch is confirmed, your task is complete. Report the
 background task identifier or output path returned by Bash, mention `/tasks`, and
